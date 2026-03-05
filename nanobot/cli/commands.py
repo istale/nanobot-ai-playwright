@@ -201,6 +201,7 @@ def onboard():
 def _make_provider(config: Config):
     """Create the appropriate LLM provider from config."""
     from nanobot.providers.custom_provider import CustomProvider
+    from nanobot.providers.gemini_web_provider import GeminiWebProvider
     from nanobot.providers.litellm_provider import LiteLLMProvider
     from nanobot.providers.openai_codex_provider import OpenAICodexProvider
 
@@ -219,6 +220,10 @@ def _make_provider(config: Config):
             api_base=config.get_api_base(model) or "http://localhost:8000/v1",
             default_model=model,
         )
+
+    # Gemini Web: browser automation (non-API)
+    if provider_name == "gemini_web" or model.startswith("gemini_web/") or model.startswith("gemini-web/"):
+        return GeminiWebProvider()
 
     from nanobot.providers.registry import find_by_name
     spec = find_by_name(provider_name)

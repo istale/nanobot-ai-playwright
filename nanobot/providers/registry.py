@@ -254,7 +254,7 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         model_overrides=(),
     ),
 
-    # Gemini: needs "gemini/" prefix for LiteLLM.
+    # Gemini API: needs "gemini/" prefix for LiteLLM.
     ProviderSpec(
         name="gemini",
         keywords=("gemini",),
@@ -270,6 +270,25 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         default_api_base="",
         strip_model_prefix=False,
         model_overrides=(),
+    ),
+
+    # Gemini Web (non-API): Playwright browser automation provider.
+    ProviderSpec(
+        name="gemini_web",
+        keywords=("gemini_web", "gemini-web"),
+        env_key="",
+        display_name="Gemini Web",
+        litellm_prefix="",
+        skip_prefixes=(),
+        env_extras=(),
+        is_gateway=False,
+        is_local=False,
+        detect_by_key_prefix="",
+        detect_by_base_keyword="",
+        default_api_base="",
+        strip_model_prefix=False,
+        model_overrides=(),
+        is_direct=True,
     ),
 
     # Zhipu: LiteLLM uses "zai/" prefix.

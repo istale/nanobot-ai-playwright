@@ -1091,3 +1091,26 @@ python -m nanobot gemini-web "Reply exactly: OK_FROM_GEMINI" --headless
 ```
 
 > If Gemini requires login, rerun with `--no-headless` on a desktop environment and complete Google login once.
+
+## Configure Gemini Web as nanobot model (non-API)
+
+You can route the main nanobot model through Gemini Web (Playwright browser mode) instead of API providers.
+
+```json
+{
+  "agents": {
+    "defaults": {
+      "model": "gemini_web/default",
+      "provider": "auto"
+    }
+  }
+}
+```
+
+Then run:
+
+```bash
+nanobot agent -m "你好，請介紹你自己"
+```
+
+> First run may require Google login in the persistent profile at `~/.nanobot/profiles/gemini-web`.
