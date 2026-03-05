@@ -20,12 +20,16 @@ async def run_once(
     headless: bool = False,
     timeout_ms: int = 120000,
     user_data_dir: Path | None = None,
+    debug_dir: Path | None = None,
 ) -> str:
     """Run one Gemini web prompt and persist the raw response text."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     profile_dir = user_data_dir or (Path.home() / ".nanobot" / "profiles" / "gemini-web")
     profile_dir.mkdir(parents=True, exist_ok=True)
+
+    _debug_dir = debug_dir or Path("outputs")
+    _debug_dir.mkdir(parents=True, exist_ok=True)
 
     async with async_playwright() as p:
         context = await p.chromium.launch_persistent_context(
@@ -40,46 +44,59 @@ async def run_once(
 
         input_selectors = [
             "textarea[aria-label*='Enter a prompt']",
+            "textarea[aria-label*='prompt']",
             "textarea[placeholder*='Enter a prompt']",
             "textarea",
             "div[contenteditable='true'][role='textbox']",
+            "div[contenteditable='true'][aria-label*='prompt']",
         ]
 
         prompt_box = None
         for selector in input_selectors:
             try:
-                prompt_box = page.locator(selector).first
-                await prompt_box.wait_for(state="visible", timeout=6000)
+                candidate = page.locator(selector).last
+                await candidate.wait_for(state="visible", timeout=6000)
+                prompt_box = candidate
                 break
             except PlaywrightTimeoutError:
                 continue
 
         if prompt_box is None:
+            await page.screenshot(path=str(_debug_dir / "gemini-web-no-input.png"), full_page=True)
             await context.close()
             raise RuntimeError(
                 "Cannot find Gemini prompt box. Likely not logged in or page layout changed."
             )
 
+        response_count_before = 0
+        for sel in ["model-response", "[data-test-id='response-container']", "message-content"]:
+            try:
+                response_count_before = max(response_count_before, await page.locator(sel).count())
+            except Exception:
+                pass
+
         await prompt_box.click()
         await prompt_box.fill(prompt)
         await prompt_box.press("Enter")
 
-        done_markers = [
-            "button:has-text('Run again')",
-            "button:has-text('Edit prompt')",
-            "[data-test-id='response-container']",
-            "model-response",
-        ]
-        marker_hit = False
-        for marker in done_markers:
-            try:
-                await page.locator(marker).last.wait_for(state="visible", timeout=timeout_ms)
-                marker_hit = True
-                break
-            except PlaywrightTimeoutError:
-                continue
+        # Wait for one new response block to appear, then settle briefly.
+        async def _response_count() -> int:
+            c = 0
+            for sel in ["model-response", "[data-test-id='response-container']", "message-content"]:
+                try:
+                    c = max(c, await page.locator(sel).count())
+                except Exception:
+                    pass
+            return c
 
-        if not marker_hit:
+        deadline = asyncio.get_event_loop().time() + (timeout_ms / 1000)
+        while asyncio.get_event_loop().time() < deadline:
+            if await _response_count() > response_count_before:
+                await page.wait_for_timeout(1200)
+                break
+            await page.wait_for_timeout(300)
+        else:
+            await page.screenshot(path=str(_debug_dir / "gemini-web-timeout.png"), full_page=True)
             await context.close()
             raise RuntimeError("Timed out waiting for Gemini response completion.")
 
@@ -103,6 +120,7 @@ async def run_once(
                 break
 
         if not extracted:
+            await page.screenshot(path=str(_debug_dir / "gemini-web-no-extract.png"), full_page=True)
             await context.close()
             raise RuntimeError("Gemini response found but could not extract text.")
 
