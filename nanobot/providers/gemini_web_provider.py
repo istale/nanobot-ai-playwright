@@ -25,6 +25,7 @@ class GeminiWebProvider(LLMProvider):
         self.headless = headless
         self.timeout_ms = timeout_ms
         self.output_dir = output_dir or Path("outputs")
+        self._seeded_system_prompt = False
 
     def get_default_model(self) -> str:
         return "gemini_web/default"
@@ -51,13 +52,30 @@ class GeminiWebProvider(LLMProvider):
         return str(content)
 
     def _build_prompt(self, messages: list[dict[str, Any]]) -> str:
-        """Send only the current user turn to avoid Gemini thread contamination."""
+        """First turn: include system prompt once. Later turns: user-only."""
+        latest_user = ""
+        latest_system = ""
+
         for msg in reversed(messages):
-            if msg.get("role") == "user":
-                text = self._to_text(msg.get("content")).strip()
-                if text:
-                    return text
-        return "Hello"
+            role = msg.get("role")
+            text = self._to_text(msg.get("content")).strip()
+            if not text:
+                continue
+            if not latest_user and role == "user":
+                latest_user = text
+            elif not latest_system and role == "system":
+                latest_system = text
+            if latest_user and latest_system:
+                break
+
+        if not latest_user:
+            latest_user = "Hello"
+
+        if not self._seeded_system_prompt and latest_system:
+            self._seeded_system_prompt = True
+            return f"[SYSTEM INSTRUCTION - APPLY THIS STYLE FOR THIS CHAT]\n{latest_system}\n\n[USER]\n{latest_user}"
+
+        return latest_user
 
     async def chat(
         self,
