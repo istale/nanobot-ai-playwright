@@ -1,0 +1,80 @@
+# Minimal file list (gemini_web-only internal build)
+
+## Project files to copy
+
+pyproject.toml
+nanobot/__init__.py
+nanobot/__main__.py
+nanobot/cli/commands.py
+nanobot/agent/loop.py
+nanobot/agent/context.py
+nanobot/agent/tools.py
+nanobot/agent/subagents.py
+nanobot/providers/base.py
+nanobot/providers/__init__.py
+nanobot/providers/registry.py
+nanobot/providers/gemini_web_provider.py
+nanobot/tools/__init__.py
+nanobot/tools/gemini_web_mvp.py
+nanobot/config/__init__.py
+nanobot/config/loader.py
+nanobot/config/schema.py
+nanobot/bus/events.py
+nanobot/bus/queue.py
+nanobot/session/manager.py
+nanobot/cron/service.py
+nanobot/cron/types.py
+nanobot/heartbeat/service.py
+nanobot/utils/helpers.py
+
+---
+
+## External file required on target machine
+
+Path: ~/.nanobot/config.json
+
+Content:
+{
+  "agents": {
+    "defaults": {
+      "workspace": "~/.nanobot/workspace",
+      "model": "gemini_web/default",
+      "provider": "auto",
+      "max_tokens": 8192,
+      "temperature": 0.1,
+      "max_tool_iterations": 40,
+      "memory_window": 100
+    }
+  },
+  "providers": {
+    "gemini_web": {
+      "api_key": "",
+      "api_base": null,
+      "extra_headers": null
+    }
+  },
+  "channels": {},
+  "gateway": {
+    "host": "0.0.0.0",
+    "port": 18790,
+    "heartbeat": {
+      "enabled": true,
+      "interval_s": 1800
+    }
+  },
+  "tools": {
+    "web": {
+      "proxy": null,
+      "search": {
+        "api_key": "",
+        "max_results": 5
+      }
+    },
+    "exec": {
+      "timeout": 60,
+      "path_append": ""
+    },
+    "restrict_to_workspace": false,
+    "mcp_servers": {}
+  }
+}
