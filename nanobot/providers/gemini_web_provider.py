@@ -51,23 +51,13 @@ class GeminiWebProvider(LLMProvider):
         return str(content)
 
     def _build_prompt(self, messages: list[dict[str, Any]]) -> str:
-        # Keep context, but ensure final user intent is present.
-        lines: list[str] = []
-        for msg in messages[-12:]:
-            role = msg.get("role", "user")
-            text = self._to_text(msg.get("content")).strip()
-            if not text:
-                continue
-            if role == "system":
-                lines.append(f"[system]\n{text}")
-            elif role == "assistant":
-                lines.append(f"[assistant]\n{text}")
-            else:
-                lines.append(f"[user]\n{text}")
-
-        if not lines:
-            return "Hello"
-        return "\n\n".join(lines)
+        """Send only the current user turn to avoid Gemini thread contamination."""
+        for msg in reversed(messages):
+            if msg.get("role") == "user":
+                text = self._to_text(msg.get("content")).strip()
+                if text:
+                    return text
+        return "Hello"
 
     async def chat(
         self,
