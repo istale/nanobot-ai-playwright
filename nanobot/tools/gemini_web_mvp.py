@@ -16,6 +16,7 @@ GEMINI_URL = "https://gemini.google.com/app"
 _PLAYWRIGHT: Playwright | None = None
 _CONTEXT_CACHE: dict[tuple[str, bool], BrowserContext] = {}
 _PAGE_CACHE: dict[tuple[str, bool], Page] = {}
+_LAST_INPUT_SELECTOR: dict[tuple[str, bool], str] = {}
 
 
 async def _get_cached_context(profile_dir: Path, headless: bool) -> BrowserContext:
@@ -115,6 +116,12 @@ async def _run_on_page(
     if navigate:
         await page.goto(GEMINI_URL, wait_until="domcontentloaded", timeout=timeout_ms)
 
+    key = None
+    for k, v in _PAGE_CACHE.items():
+        if v is page:
+            key = k
+            break
+
     input_selectors = [
         "textarea[aria-label*='Enter a prompt']",
         "textarea[aria-label*='prompt']",
@@ -123,13 +130,18 @@ async def _run_on_page(
         "div[contenteditable='true'][role='textbox']",
         "div[contenteditable='true'][aria-label*='prompt']",
     ]
+    if key and key in _LAST_INPUT_SELECTOR:
+        preferred = _LAST_INPUT_SELECTOR[key]
+        input_selectors = [preferred] + [s for s in input_selectors if s != preferred]
 
     prompt_box = None
     for selector in input_selectors:
         try:
             candidate = page.locator(selector).last
-            await candidate.wait_for(state="visible", timeout=6000)
+            await candidate.wait_for(state="visible", timeout=1000)
             prompt_box = candidate
+            if key:
+                _LAST_INPUT_SELECTOR[key] = selector
             break
         except PlaywrightTimeoutError:
             continue
