@@ -15,6 +15,7 @@ GEMINI_URL = "https://gemini.google.com/app"
 
 _PLAYWRIGHT: Playwright | None = None
 _CONTEXT_CACHE: dict[tuple[str, bool], BrowserContext] = {}
+_PAGE_CACHE: dict[tuple[str, bool], Page] = {}
 
 
 async def _get_cached_context(profile_dir: Path, headless: bool) -> BrowserContext:
@@ -62,7 +63,12 @@ async def run_once(
 
     if keep_browser_open:
         context = await _get_cached_context(profile_dir, headless)
-        page = context.pages[0] if context.pages else await context.new_page()
+        key = (str(profile_dir), headless)
+        page = _PAGE_CACHE.get(key)
+        if page is None or page.is_closed():
+            page = context.pages[0] if context.pages else await context.new_page()
+            _PAGE_CACHE[key] = page
+        navigate = page.url == "" or "gemini.google.com" not in page.url
     else:
         async with async_playwright() as p:
             context = await p.chromium.launch_persistent_context(
@@ -72,9 +78,27 @@ async def run_once(
                 args=["--disable-blink-features=AutomationControlled"],
             )
             page = context.pages[0] if context.pages else await context.new_page()
-            return await _run_on_page(page, context, prompt, output_path, timeout_ms, _debug_dir, transient=True)
+            return await _run_on_page(
+                page,
+                context,
+                prompt,
+                output_path,
+                timeout_ms,
+                _debug_dir,
+                transient=True,
+                navigate=True,
+            )
 
-    return await _run_on_page(page, context, prompt, output_path, timeout_ms, _debug_dir, transient=transient)
+    return await _run_on_page(
+        page,
+        context,
+        prompt,
+        output_path,
+        timeout_ms,
+        _debug_dir,
+        transient=transient,
+        navigate=navigate,
+    )
 
 
 async def _run_on_page(
@@ -86,8 +110,10 @@ async def _run_on_page(
     debug_dir: Path,
     *,
     transient: bool,
+    navigate: bool,
 ) -> str:
-    await page.goto(GEMINI_URL, wait_until="domcontentloaded", timeout=timeout_ms)
+    if navigate:
+        await page.goto(GEMINI_URL, wait_until="domcontentloaded", timeout=timeout_ms)
 
     input_selectors = [
         "textarea[aria-label*='Enter a prompt']",
@@ -137,7 +163,6 @@ async def _run_on_page(
     deadline = asyncio.get_event_loop().time() + (timeout_ms / 1000)
     while asyncio.get_event_loop().time() < deadline:
         if await _response_count() > response_count_before:
-            await page.wait_for_timeout(1200)
             break
         await page.wait_for_timeout(300)
     else:
@@ -154,16 +179,41 @@ async def _run_on_page(
         "message-content .markdown",
     ]
 
+    async def _latest_response_text() -> str:
+        for selector in response_selectors:
+            locator = page.locator(selector)
+            count = await locator.count()
+            if count <= 0:
+                continue
+            text = (await locator.nth(count - 1).inner_text()).strip()
+            if text:
+                return text
+        return ""
+
+    # Wait until streaming appears settled: stop button gone and text stable.
     extracted = ""
-    for selector in response_selectors:
-        locator = page.locator(selector)
-        count = await locator.count()
-        if count <= 0:
-            continue
-        text = (await locator.nth(count - 1).inner_text()).strip()
-        if text:
-            extracted = text
+    stable_ticks = 0
+    last_text = ""
+    while asyncio.get_event_loop().time() < deadline:
+        cur_text = await _latest_response_text()
+        if cur_text and cur_text == last_text:
+            stable_ticks += 1
+        else:
+            stable_ticks = 0
+        last_text = cur_text or last_text
+
+        stop_visible = False
+        for stop_sel in ["button:has-text('Stop generating')", "button[aria-label*='Stop']"]:
+            try:
+                stop_visible = stop_visible or await page.locator(stop_sel).first.is_visible(timeout=100)
+            except Exception:
+                pass
+
+        if last_text and stable_ticks >= 4 and not stop_visible:
+            extracted = last_text
             break
+
+        await page.wait_for_timeout(500)
 
     if not extracted:
         await page.screenshot(path=str(debug_dir / "gemini-web-no-extract.png"), full_page=True)
