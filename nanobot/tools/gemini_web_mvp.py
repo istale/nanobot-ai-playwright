@@ -6,11 +6,35 @@ import asyncio
 from datetime import UTC, datetime
 from pathlib import Path
 
+from playwright.async_api import BrowserContext, Page
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
-from playwright.async_api import async_playwright
+from playwright.async_api import Playwright, async_playwright
 
 
 GEMINI_URL = "https://gemini.google.com/app"
+
+_PLAYWRIGHT: Playwright | None = None
+_CONTEXT_CACHE: dict[tuple[str, bool], BrowserContext] = {}
+
+
+async def _get_cached_context(profile_dir: Path, headless: bool) -> BrowserContext:
+    global _PLAYWRIGHT
+    key = (str(profile_dir), headless)
+    existing = _CONTEXT_CACHE.get(key)
+    if existing is not None:
+        return existing
+
+    if _PLAYWRIGHT is None:
+        _PLAYWRIGHT = await async_playwright().start()
+
+    context = await _PLAYWRIGHT.chromium.launch_persistent_context(
+        str(profile_dir),
+        headless=headless,
+        viewport={"width": 1400, "height": 1000},
+        args=["--disable-blink-features=AutomationControlled"],
+    )
+    _CONTEXT_CACHE[key] = context
+    return context
 
 
 async def run_once(
@@ -21,6 +45,7 @@ async def run_once(
     timeout_ms: int = 120000,
     user_data_dir: Path | None = None,
     debug_dir: Path | None = None,
+    keep_browser_open: bool = False,
 ) -> str:
     """Run one Gemini web prompt and persist the raw response text."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -31,102 +56,125 @@ async def run_once(
     _debug_dir = debug_dir or Path("outputs")
     _debug_dir.mkdir(parents=True, exist_ok=True)
 
-    async with async_playwright() as p:
-        context = await p.chromium.launch_persistent_context(
-            str(profile_dir),
-            headless=headless,
-            viewport={"width": 1400, "height": 1000},
-            args=["--disable-blink-features=AutomationControlled"],
-        )
+    context: BrowserContext | None = None
+    page: Page | None = None
+    transient = not keep_browser_open
+
+    if keep_browser_open:
+        context = await _get_cached_context(profile_dir, headless)
         page = context.pages[0] if context.pages else await context.new_page()
-
-        await page.goto(GEMINI_URL, wait_until="domcontentloaded", timeout=timeout_ms)
-
-        input_selectors = [
-            "textarea[aria-label*='Enter a prompt']",
-            "textarea[aria-label*='prompt']",
-            "textarea[placeholder*='Enter a prompt']",
-            "textarea",
-            "div[contenteditable='true'][role='textbox']",
-            "div[contenteditable='true'][aria-label*='prompt']",
-        ]
-
-        prompt_box = None
-        for selector in input_selectors:
-            try:
-                candidate = page.locator(selector).last
-                await candidate.wait_for(state="visible", timeout=6000)
-                prompt_box = candidate
-                break
-            except PlaywrightTimeoutError:
-                continue
-
-        if prompt_box is None:
-            await page.screenshot(path=str(_debug_dir / "gemini-web-no-input.png"), full_page=True)
-            await context.close()
-            raise RuntimeError(
-                "Cannot find Gemini prompt box. Likely not logged in or page layout changed."
+    else:
+        async with async_playwright() as p:
+            context = await p.chromium.launch_persistent_context(
+                str(profile_dir),
+                headless=headless,
+                viewport={"width": 1400, "height": 1000},
+                args=["--disable-blink-features=AutomationControlled"],
             )
+            page = context.pages[0] if context.pages else await context.new_page()
+            return await _run_on_page(page, context, prompt, output_path, timeout_ms, _debug_dir, transient=True)
 
-        response_count_before = 0
+    return await _run_on_page(page, context, prompt, output_path, timeout_ms, _debug_dir, transient=transient)
+
+
+async def _run_on_page(
+    page: Page,
+    context: BrowserContext,
+    prompt: str,
+    output_path: Path,
+    timeout_ms: int,
+    debug_dir: Path,
+    *,
+    transient: bool,
+) -> str:
+    await page.goto(GEMINI_URL, wait_until="domcontentloaded", timeout=timeout_ms)
+
+    input_selectors = [
+        "textarea[aria-label*='Enter a prompt']",
+        "textarea[aria-label*='prompt']",
+        "textarea[placeholder*='Enter a prompt']",
+        "textarea",
+        "div[contenteditable='true'][role='textbox']",
+        "div[contenteditable='true'][aria-label*='prompt']",
+    ]
+
+    prompt_box = None
+    for selector in input_selectors:
+        try:
+            candidate = page.locator(selector).last
+            await candidate.wait_for(state="visible", timeout=6000)
+            prompt_box = candidate
+            break
+        except PlaywrightTimeoutError:
+            continue
+
+    if prompt_box is None:
+        await page.screenshot(path=str(debug_dir / "gemini-web-no-input.png"), full_page=True)
+        if transient:
+            await context.close()
+        raise RuntimeError("Cannot find Gemini prompt box. Likely not logged in or page layout changed.")
+
+    response_count_before = 0
+    for sel in ["model-response", "[data-test-id='response-container']", "message-content"]:
+        try:
+            response_count_before = max(response_count_before, await page.locator(sel).count())
+        except Exception:
+            pass
+
+    await prompt_box.click()
+    await prompt_box.fill(prompt)
+    await prompt_box.press("Enter")
+
+    async def _response_count() -> int:
+        c = 0
         for sel in ["model-response", "[data-test-id='response-container']", "message-content"]:
             try:
-                response_count_before = max(response_count_before, await page.locator(sel).count())
+                c = max(c, await page.locator(sel).count())
             except Exception:
                 pass
+        return c
 
-        await prompt_box.click()
-        await prompt_box.fill(prompt)
-        await prompt_box.press("Enter")
-
-        # Wait for one new response block to appear, then settle briefly.
-        async def _response_count() -> int:
-            c = 0
-            for sel in ["model-response", "[data-test-id='response-container']", "message-content"]:
-                try:
-                    c = max(c, await page.locator(sel).count())
-                except Exception:
-                    pass
-            return c
-
-        deadline = asyncio.get_event_loop().time() + (timeout_ms / 1000)
-        while asyncio.get_event_loop().time() < deadline:
-            if await _response_count() > response_count_before:
-                await page.wait_for_timeout(1200)
-                break
-            await page.wait_for_timeout(300)
-        else:
-            await page.screenshot(path=str(_debug_dir / "gemini-web-timeout.png"), full_page=True)
+    deadline = asyncio.get_event_loop().time() + (timeout_ms / 1000)
+    while asyncio.get_event_loop().time() < deadline:
+        if await _response_count() > response_count_before:
+            await page.wait_for_timeout(1200)
+            break
+        await page.wait_for_timeout(300)
+    else:
+        await page.screenshot(path=str(debug_dir / "gemini-web-timeout.png"), full_page=True)
+        if transient:
             await context.close()
-            raise RuntimeError("Timed out waiting for Gemini response completion.")
+        raise RuntimeError("Timed out waiting for Gemini response completion.")
 
-        response_selectors = [
-            "model-response .markdown",
-            "model-response",
-            "[data-test-id='response-container'] .markdown",
-            "[data-test-id='response-container']",
-            "message-content .markdown",
-        ]
+    response_selectors = [
+        "model-response .markdown",
+        "model-response",
+        "[data-test-id='response-container'] .markdown",
+        "[data-test-id='response-container']",
+        "message-content .markdown",
+    ]
 
-        extracted = ""
-        for selector in response_selectors:
-            locator = page.locator(selector)
-            count = await locator.count()
-            if count <= 0:
-                continue
-            text = (await locator.nth(count - 1).inner_text()).strip()
-            if text:
-                extracted = text
-                break
+    extracted = ""
+    for selector in response_selectors:
+        locator = page.locator(selector)
+        count = await locator.count()
+        if count <= 0:
+            continue
+        text = (await locator.nth(count - 1).inner_text()).strip()
+        if text:
+            extracted = text
+            break
 
-        if not extracted:
-            await page.screenshot(path=str(_debug_dir / "gemini-web-no-extract.png"), full_page=True)
+    if not extracted:
+        await page.screenshot(path=str(debug_dir / "gemini-web-no-extract.png"), full_page=True)
+        if transient:
             await context.close()
-            raise RuntimeError("Gemini response found but could not extract text.")
+        raise RuntimeError("Gemini response found but could not extract text.")
 
-        output_path.write_text(extracted, encoding="utf-8")
+    output_path.write_text(extracted, encoding="utf-8")
+    if transient:
         await context.close()
-        return extracted
+    return extracted
 
 
 def default_output_path() -> Path:
@@ -141,6 +189,7 @@ def run_sync(
     headless: bool = False,
     timeout_ms: int = 120000,
     user_data_dir: Path | None = None,
+    keep_browser_open: bool = False,
 ) -> str:
     return asyncio.run(
         run_once(
@@ -149,5 +198,6 @@ def run_sync(
             headless=headless,
             timeout_ms=timeout_ms,
             user_data_dir=user_data_dir,
+            keep_browser_open=keep_browser_open,
         )
     )

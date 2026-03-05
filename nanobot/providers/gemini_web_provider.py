@@ -90,6 +90,7 @@ class GeminiWebProvider(LLMProvider):
             headless=self.headless,
             timeout_ms=self.timeout_ms,
             user_data_dir=self.user_data_dir,
+            keep_browser_open=True,
         )
 
         usage = {
