@@ -16,7 +16,7 @@ class GeminiWebProvider(LLMProvider):
     def __init__(
         self,
         user_data_dir: Path | None = None,
-        headless: bool = True,
+        headless: bool = False,
         timeout_ms: int = 120000,
         output_dir: Path | None = None,
     ):
