@@ -104,9 +104,10 @@ class GeminiWebProvider(LLMProvider):
                 f"[USER]\n{latest_user}\n\n"
                 f"[TOOL_RESULT]\n{latest_tool_result}\n\n"
                 "Use the tool result to continue and answer the user."
+                f"{tool_protocol}"
             )
 
-        return latest_user
+        return f"{latest_user}{tool_protocol}"
 
     def _extract_tool_calls(self, content: str) -> tuple[str | None, list[ToolCallRequest]]:
         calls: list[ToolCallRequest] = []
