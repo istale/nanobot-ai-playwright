@@ -1075,3 +1075,19 @@ PRs welcome! The codebase is intentionally small and readable. 🤗
 <p align="center">
   <sub>nanobot is for educational, research, and technical exchange purposes only</sub>
 </p>
+
+## Gemini Web MVP (Playwright, non-API)
+
+This MVP opens Gemini Web in a Playwright browser, sends one prompt, waits for completion, and writes the raw response text to a `.txt` file.
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -e . playwright
+python -m playwright install chromium
+
+python -m nanobot gemini-web "Reply exactly: OK_FROM_GEMINI" --headless
+# output: outputs/gemini-web-YYYYMMDD-HHMMSS.txt
+```
+
+> If Gemini requires login, rerun with `--no-headless` on a desktop environment and complete Google login once.

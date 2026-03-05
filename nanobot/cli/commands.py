@@ -598,6 +598,56 @@ def agent(
 
 
 # ============================================================================
+# Gemini Web MVP (Playwright normal mode, non-API)
+# ============================================================================
+
+
+@app.command("gemini-web")
+def gemini_web(
+    prompt: str = typer.Argument(..., help="Single prompt to send to Gemini Web"),
+    output: Path = typer.Option(
+        None,
+        "--output",
+        "-o",
+        help="Output txt path for raw Gemini response (default: outputs/gemini-web-<timestamp>.txt)",
+    ),
+    headless: bool = typer.Option(False, "--headless/--no-headless", help="Run browser headless"),
+    timeout_ms: int = typer.Option(120000, "--timeout-ms", help="Timeout waiting for UI/response"),
+    user_data_dir: Path = typer.Option(
+        Path.home() / ".nanobot" / "profiles" / "gemini-web",
+        "--user-data-dir",
+        help="Persistent browser profile dir (keeps Gemini login session)",
+    ),
+):
+    """MVP: Use Playwright browser mode to query Gemini web and save raw response."""
+    try:
+        from nanobot.tools.gemini_web_mvp import default_output_path, run_sync
+    except ImportError as exc:
+        console.print("[red]Missing dependency: playwright[/red]")
+        console.print("Install with: pip install playwright && python -m playwright install chromium")
+        raise typer.Exit(1) from exc
+
+    out_path = output or default_output_path()
+    console.print(f"{__logo__} Running Gemini Web MVP...")
+    console.print(f"Output file: [cyan]{out_path}[/cyan]")
+
+    try:
+        response = run_sync(
+            prompt=prompt,
+            output_path=out_path,
+            headless=headless,
+            timeout_ms=timeout_ms,
+            user_data_dir=user_data_dir,
+        )
+    except Exception as exc:
+        console.print(f"[red]Failed:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+    console.print("[green]✓[/green] Gemini response saved")
+    console.print(response)
+
+
+# ============================================================================
 # Channel Commands
 # ============================================================================
 
