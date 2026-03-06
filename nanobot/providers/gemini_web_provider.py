@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import json
 import re
+import traceback
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
+
+from loguru import logger
 
 from nanobot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
 from nanobot.tools.gemini_web_mvp import run_once
@@ -141,14 +144,33 @@ class GeminiWebProvider(LLMProvider):
         ts = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
         output_path = self.output_dir / f"gemini-web-provider-{ts}.txt"
 
-        content = await run_once(
-            prompt=prompt,
-            output_path=output_path,
-            headless=self.headless,
-            timeout_ms=self.timeout_ms,
-            user_data_dir=self.user_data_dir,
-            keep_browser_open=True,
-        )
+        try:
+            content = await run_once(
+                prompt=prompt,
+                output_path=output_path,
+                headless=self.headless,
+                timeout_ms=self.timeout_ms,
+                user_data_dir=self.user_data_dir,
+                keep_browser_open=True,
+            )
+        except Exception as e:
+            tb = traceback.format_exc()
+            logger.exception("Gemini web provider failed: {}", e)
+            debug_path = self.output_dir / f"gemini-web-provider-error-{ts}.log"
+            try:
+                debug_path.parent.mkdir(parents=True, exist_ok=True)
+                debug_path.write_text(tb, encoding="utf-8")
+            except Exception:
+                pass
+            return LLMResponse(
+                content=(
+                    "Gemini web provider error:\n"
+                    f"{e}\n\n"
+                    f"Traceback saved to: {debug_path}"
+                ),
+                finish_reason="error",
+                usage={"prompt_tokens": len(prompt), "completion_tokens": 0, "total_tokens": len(prompt)},
+            )
 
         cleaned, tool_calls = self._extract_tool_calls(content)
         usage = {
