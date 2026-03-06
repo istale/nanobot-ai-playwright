@@ -31,6 +31,7 @@ class GeminiWebProvider(LLMProvider):
         headless: bool = False,
         timeout_ms: int = 120000,
         output_dir: Path | None = None,
+        text_protocol_config: dict[str, Any] | None = None,
     ):
         super().__init__(api_key=None, api_base=None)
         self.user_data_dir = user_data_dir or (get_data_dir() / "profiles" / "gemini-web")
@@ -38,6 +39,22 @@ class GeminiWebProvider(LLMProvider):
         self.timeout_ms = timeout_ms
         self.output_dir = output_dir or Path("outputs")
         self._seeded_system_prompt = False
+        self.text_protocol = {
+            "enabled": True,
+            "include_tool_selection_policy": True,
+            "include_parameter_constraints": True,
+            "include_parallel_rules": False,
+            "include_finish_reason_semantics": False,
+            "include_output_format_guarantees": True,
+            "include_instruction_priority": True,
+            "include_error_recovery_policy": True,
+            "include_context_compaction_policy": False,
+            "max_tools_in_prompt": 12,
+            "max_schema_chars_per_tool": 1200,
+            "windows_path_hints": True,
+        }
+        if isinstance(text_protocol_config, dict):
+            self.text_protocol.update(text_protocol_config)
 
     def get_default_model(self) -> str:
         return "gemini_web/default"
@@ -63,6 +80,82 @@ class GeminiWebProvider(LLMProvider):
             return text if isinstance(text, str) else ""
         return str(content)
 
+    def _render_tool_constraints(self, tools: list[dict[str, Any]]) -> str:
+        if not self.text_protocol.get("include_parameter_constraints", True):
+            return ""
+        max_tools = int(self.text_protocol.get("max_tools_in_prompt", 12) or 12)
+        max_chars = int(self.text_protocol.get("max_schema_chars_per_tool", 1200) or 1200)
+        chunks: list[str] = []
+        for tool in tools[:max_tools]:
+            if not isinstance(tool, dict):
+                continue
+            fn = tool.get("function") or {}
+            name = str(fn.get("name") or "").strip()
+            if not name:
+                continue
+            params = fn.get("parameters") if isinstance(fn.get("parameters"), dict) else {}
+            required = params.get("required") if isinstance(params.get("required"), list) else []
+            properties = params.get("properties") if isinstance(params.get("properties"), dict) else {}
+            prop_lines: list[str] = []
+            for k, v in list(properties.items())[:8]:
+                if isinstance(v, dict):
+                    t = v.get("type", "any")
+                    enum = v.get("enum")
+                    if isinstance(enum, list) and enum:
+                        t = f"{t} enum={enum[:6]}"
+                    prop_lines.append(f"- {k}: {t}")
+            block = (
+                f"[TOOL: {name}]\n"
+                f"required: {', '.join(required) if required else '(none)'}\n"
+                f"properties:\n{chr(10).join(prop_lines) if prop_lines else '- (no properties)'}"
+            )
+            if name == "exec":
+                block += (
+                    "\nexample:\n"
+                    '<tool_call>{"name":"exec","arguments":{"command":"dir D:/temp"}}</tool_call>'
+                )
+            chunks.append(block[:max_chars])
+        return "\n\n".join(chunks)
+
+    def _build_tool_protocol(self, tools: list[dict[str, Any]] | None) -> str:
+        if not tools or not self.text_protocol.get("enabled", True):
+            return ""
+        names = [t.get("function", {}).get("name", "") for t in tools if isinstance(t, dict)]
+        names = [n for n in names if n]
+        if not names:
+            return ""
+
+        lines = [
+            "[TOOL_CALL_PROTOCOL]",
+            "When you need a tool, include at least one XML block in your reply:",
+            '<tool_call>{"name":"<tool_name>","arguments":{...}}</tool_call>',
+            "You may include short natural language before/after the block.",
+            f"Allowed tools: {', '.join(names)}",
+        ]
+
+        if self.text_protocol.get("include_tool_selection_policy", True):
+            lines.append("Tool selection: use list_dir/read_file/edit_file when possible; use exec only when needed.")
+        if self.text_protocol.get("include_output_format_guarantees", True):
+            lines.append("Place valid JSON inside <tool_call>; avoid markdown fences for tool-call payload.")
+        if self.text_protocol.get("include_error_recovery_policy", True):
+            lines.append("If tool args are invalid, fix arguments and send a corrected <tool_call>.")
+        if self.text_protocol.get("windows_path_hints", True):
+            lines.append("Windows paths: prefer D:/path or escaped backslashes like D:\\\\path.")
+        if self.text_protocol.get("include_instruction_priority", True):
+            lines.append("Priority: system instruction > tool protocol > user request > tool result.")
+        if self.text_protocol.get("include_parallel_rules", False):
+            lines.append("Parallel tools: only emit multiple <tool_call> blocks when truly independent.")
+        if self.text_protocol.get("include_finish_reason_semantics", False):
+            lines.append("If no tool is needed, answer normally without <tool_call>.")
+        if self.text_protocol.get("include_context_compaction_policy", False):
+            lines.append("Keep tool-call payload minimal; avoid repeating long prior context in arguments.")
+
+        constraints = self._render_tool_constraints(tools)
+        body = "\n".join(lines)
+        if constraints:
+            body += "\n\n[TOOL_SCHEMAS]\n" + constraints
+        return "\n\n" + body
+
     def _build_prompt(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None) -> str:
         """First turn includes system+tool protocol; later turns send user or tool-result context."""
         latest_user = ""
@@ -86,19 +179,7 @@ class GeminiWebProvider(LLMProvider):
         if not latest_user:
             latest_user = "Hello"
 
-        tool_protocol = ""
-        if tools:
-            names = [t.get("function", {}).get("name", "") for t in tools if isinstance(t, dict)]
-            names = [n for n in names if n]
-            if names:
-                tool_protocol = (
-                    "\n\n[TOOL_CALL_PROTOCOL]\n"
-                    "When you need a tool, include at least one XML block in your reply:\n"
-                    "<tool_call>{\"name\":\"<tool_name>\",\"arguments\":{...}}</tool_call>\n"
-                    "You may include short natural language before/after the block.\n"
-                    f"Allowed tools: {', '.join(names)}\n"
-                    "If no tool needed, reply normally."
-                )
+        tool_protocol = self._build_tool_protocol(tools)
 
         if not self._seeded_system_prompt and latest_system:
             self._seeded_system_prompt = True

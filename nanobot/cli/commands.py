@@ -208,7 +208,10 @@ def _make_provider(config: Config):
     provider_name = config.get_provider_name(model)
 
     if provider_name == "gemini_web" or model.startswith("gemini_web/") or model.startswith("gemini-web/"):
-        return GeminiWebProvider()
+        pconf = config.providers.gemini_web
+        return GeminiWebProvider(
+            text_protocol_config=(pconf.text_protocol.model_dump() if pconf.text_protocol else None),
+        )
 
     console.print("[red]Error: This minimal build only supports gemini_web provider.[/red]")
     from nanobot.config.loader import get_config_path

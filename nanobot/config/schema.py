@@ -1,7 +1,7 @@
 """Configuration schema using Pydantic."""
 
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
@@ -236,12 +236,31 @@ class AgentsConfig(Base):
     defaults: AgentDefaults = Field(default_factory=AgentDefaults)
 
 
+class TextProtocolConfig(Base):
+    """Prompt text-protocol switches for web-driven providers."""
+
+    enabled: bool = True
+    include_tool_selection_policy: bool = True
+    include_parameter_constraints: bool = True
+    include_parallel_rules: bool = False
+    include_finish_reason_semantics: bool = False
+    include_output_format_guarantees: bool = True
+    include_instruction_priority: bool = True
+    include_error_recovery_policy: bool = True
+    include_context_compaction_policy: bool = False
+    max_tools_in_prompt: int = 12
+    max_schema_chars_per_tool: int = 1200
+    windows_path_hints: bool = True
+
+
 class ProviderConfig(Base):
     """LLM provider configuration."""
 
     api_key: str = ""
     api_base: str | None = None
     extra_headers: dict[str, str] | None = None  # Custom headers (e.g. APP-Code for AiHubMix)
+    text_protocol: TextProtocolConfig = Field(default_factory=TextProtocolConfig)
+    options: dict[str, Any] | None = None
 
 
 class ProvidersConfig(Base):
