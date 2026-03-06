@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -12,6 +13,7 @@ from playwright.async_api import Playwright, async_playwright
 
 
 GEMINI_URL = "https://gemini.google.com/app"
+CHROME_CDP_URL = os.getenv("NANOBOT_CHROME_CDP_URL", "").strip()
 
 _PLAYWRIGHT: Playwright | None = None
 _CONTEXT_CACHE: dict[tuple[str, bool], BrowserContext] = {}
@@ -29,12 +31,20 @@ async def _get_cached_context(profile_dir: Path, headless: bool) -> BrowserConte
     if _PLAYWRIGHT is None:
         _PLAYWRIGHT = await async_playwright().start()
 
-    context = await _PLAYWRIGHT.chromium.launch_persistent_context(
-        str(profile_dir),
-        headless=headless,
-        viewport={"width": 1400, "height": 1000},
-        args=["--disable-blink-features=AutomationControlled"],
-    )
+    if CHROME_CDP_URL:
+        browser = await _PLAYWRIGHT.chromium.connect_over_cdp(CHROME_CDP_URL)
+        if browser.contexts:
+            context = browser.contexts[0]
+        else:
+            context = await browser.new_context(viewport={"width": 1400, "height": 1000})
+    else:
+        context = await _PLAYWRIGHT.chromium.launch_persistent_context(
+            str(profile_dir),
+            headless=headless,
+            viewport={"width": 1400, "height": 1000},
+            args=["--disable-blink-features=AutomationControlled"],
+        )
+
     _CONTEXT_CACHE[key] = context
     return context
 
@@ -60,7 +70,7 @@ async def run_once(
 
     context: BrowserContext | None = None
     page: Page | None = None
-    transient = not keep_browser_open
+    transient = (not keep_browser_open) and (not CHROME_CDP_URL)
 
     if keep_browser_open:
         context = await _get_cached_context(profile_dir, headless)
@@ -71,6 +81,20 @@ async def run_once(
             _PAGE_CACHE[key] = page
         navigate = page.url == "" or "gemini.google.com" not in page.url
     else:
+        if CHROME_CDP_URL:
+            context = await _get_cached_context(profile_dir, headless)
+            page = context.pages[0] if context.pages else await context.new_page()
+            return await _run_on_page(
+                page,
+                context,
+                prompt,
+                output_path,
+                timeout_ms,
+                _debug_dir,
+                transient=False,
+                navigate=True,
+            )
+
         async with async_playwright() as p:
             context = await p.chromium.launch_persistent_context(
                 str(profile_dir),
