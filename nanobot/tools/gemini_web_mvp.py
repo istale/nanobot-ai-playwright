@@ -55,7 +55,7 @@ async def run_once(
     if keep_browser_open:
         context = await get_cached_context(profile_dir, headless)
         page = await get_or_create_page(context, key)
-        navigate = page.url == "" or "gemini.google.com" not in page.url
+        navigate = page.url == "" or GEMINI_URL not in page.url
     else:
         if CHROME_CDP_URL:
             context = await get_cached_context(profile_dir, headless)
@@ -68,7 +68,7 @@ async def run_once(
                 timeout_ms,
                 _debug_dir,
                 transient=False,
-                navigate=True,
+                navigate=(page.url == "" or GEMINI_URL not in page.url),
                 key=key,
             )
 
