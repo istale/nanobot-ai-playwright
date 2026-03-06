@@ -117,6 +117,48 @@ class GeminiWebProvider(LLMProvider):
         return latest_user
 
     @staticmethod
+    def _escape_invalid_json_backslashes(text: str) -> str:
+        """Escape invalid backslashes inside JSON string literals.
+
+        Helps with Windows paths like C:\temp\foo when model outputs single
+        backslashes that are invalid in JSON.
+        """
+        out: list[str] = []
+        in_str = False
+        i = 0
+        n = len(text)
+        while i < n:
+            ch = text[i]
+            if ch == '"':
+                # Count preceding backslashes to determine if quote is escaped.
+                bs = 0
+                j = i - 1
+                while j >= 0 and text[j] == "\\":
+                    bs += 1
+                    j -= 1
+                if bs % 2 == 0:
+                    in_str = not in_str
+                out.append(ch)
+                i += 1
+                continue
+
+            if in_str and ch == "\\":
+                nxt = text[i + 1] if i + 1 < n else ""
+                if nxt in ('"', "\\", "/", "b", "f", "n", "r", "t"):
+                    out.append(ch)
+                elif nxt == "u" and i + 5 < n:
+                    out.append(ch)
+                else:
+                    out.append("\\\\")
+                i += 1
+                continue
+
+            out.append(ch)
+            i += 1
+
+        return "".join(out)
+
+    @staticmethod
     def _load_tool_payload(raw: str) -> dict[str, Any] | None:
         text = (raw or "").strip()
         if not text:
@@ -124,10 +166,14 @@ class GeminiWebProvider(LLMProvider):
         try:
             data = json.loads(text)
         except Exception:
+            fixed = GeminiWebProvider._escape_invalid_json_backslashes(text)
             try:
-                data = json_repair.loads(text)
+                data = json.loads(fixed)
             except Exception:
-                return None
+                try:
+                    data = json_repair.loads(fixed)
+                except Exception:
+                    return None
         return data if isinstance(data, dict) else None
 
     @staticmethod
