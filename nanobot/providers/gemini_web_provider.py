@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import html
 import json
 import re
 import traceback
+
+import json_repair
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -20,7 +23,7 @@ from nanobot.tools.gemini_web_mvp import run_once
 class GeminiWebProvider(LLMProvider):
     """Provider that uses Gemini web UI instead of API."""
 
-    TOOL_CALL_PATTERN = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
+    TOOL_CALL_PATTERN = re.compile(r"<tool_call>\s*(.*?)\s*</tool_call>", re.DOTALL)
 
     def __init__(
         self,
@@ -90,8 +93,9 @@ class GeminiWebProvider(LLMProvider):
             if names:
                 tool_protocol = (
                     "\n\n[TOOL_CALL_PROTOCOL]\n"
-                    "When you need a tool, output EXACTLY one XML block and nothing else before it:\n"
+                    "When you need a tool, include at least one XML block in your reply:\n"
                     "<tool_call>{\"name\":\"<tool_name>\",\"arguments\":{...}}</tool_call>\n"
+                    "You may include short natural language before/after the block.\n"
                     f"Allowed tools: {', '.join(names)}\n"
                     "If no tool needed, reply normally."
                 )
@@ -112,22 +116,85 @@ class GeminiWebProvider(LLMProvider):
 
         return latest_user
 
+    @staticmethod
+    def _load_tool_payload(raw: str) -> dict[str, Any] | None:
+        text = (raw or "").strip()
+        if not text:
+            return None
+        try:
+            data = json.loads(text)
+        except Exception:
+            try:
+                data = json_repair.loads(text)
+            except Exception:
+                return None
+        return data if isinstance(data, dict) else None
+
+    @staticmethod
+    def _iter_json_objects(text: str) -> list[str]:
+        objs: list[str] = []
+        depth = 0
+        start = -1
+        in_str = False
+        esc = False
+        for i, ch in enumerate(text):
+            if in_str:
+                if esc:
+                    esc = False
+                elif ch == "\\":
+                    esc = True
+                elif ch == '"':
+                    in_str = False
+                continue
+            if ch == '"':
+                in_str = True
+                continue
+            if ch == "{":
+                if depth == 0:
+                    start = i
+                depth += 1
+            elif ch == "}" and depth > 0:
+                depth -= 1
+                if depth == 0 and start >= 0:
+                    objs.append(text[start : i + 1])
+                    start = -1
+        return objs
+
     def _extract_tool_calls(self, content: str) -> tuple[str | None, list[ToolCallRequest]]:
         calls: list[ToolCallRequest] = []
-        cleaned = content
-        for m in self.TOOL_CALL_PATTERN.finditer(content or ""):
-            raw = m.group(1)
-            try:
-                data = json.loads(raw)
-                name = str(data.get("name", "")).strip()
-                arguments = data.get("arguments", {})
-                if name and isinstance(arguments, dict):
-                    calls.append(ToolCallRequest(id=f"tw_{uuid4().hex[:12]}", name=name, arguments=arguments))
-            except Exception:
-                continue
+        source = html.unescape(content or "")
 
+        candidates: list[str] = [m.group(1).strip() for m in self.TOOL_CALL_PATTERN.finditer(source)]
+
+        # Fallback 1: JSON fenced block.
+        if not candidates:
+            for m in re.finditer(r"```(?:json)?\s*(\{[\s\S]*?\})\s*```", source, flags=re.IGNORECASE):
+                candidates.append(m.group(1).strip())
+
+        # Fallback 2: scan for JSON objects containing required keys.
+        if not candidates:
+            for obj in self._iter_json_objects(source):
+                if '"name"' in obj and '"arguments"' in obj:
+                    candidates.append(obj)
+
+        for raw in candidates:
+            data = self._load_tool_payload(raw)
+            if not data:
+                continue
+            name = str(data.get("name", "")).strip()
+            arguments = data.get("arguments", {})
+            if isinstance(arguments, str):
+                parsed_args = self._load_tool_payload(arguments)
+                if isinstance(parsed_args, dict):
+                    arguments = parsed_args
+            if name and isinstance(arguments, dict):
+                calls.append(ToolCallRequest(id=f"tw_{uuid4().hex[:12]}", name=name, arguments=arguments))
+
+        cleaned = source
         if calls:
-            cleaned = self.TOOL_CALL_PATTERN.sub("", cleaned).strip() or None
+            cleaned = self.TOOL_CALL_PATTERN.sub("", cleaned)
+            cleaned = re.sub(r"```(?:json)?\s*\{[\s\S]*?\}\s*```", "", cleaned, flags=re.IGNORECASE)
+            cleaned = cleaned.strip() or None
         return cleaned, calls
 
     async def chat(
