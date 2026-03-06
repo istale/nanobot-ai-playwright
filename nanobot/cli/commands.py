@@ -87,7 +87,8 @@ def _init_prompt_session() -> None:
     except Exception:
         pass
 
-    history_file = Path.home() / ".nanobot" / "history" / "cli_history"
+    from nanobot.config.loader import get_data_dir
+    history_file = get_data_dir() / "history" / "cli_history"
     history_file.parent.mkdir(parents=True, exist_ok=True)
 
     _PROMPT_SESSION = PromptSession(
@@ -189,7 +190,8 @@ def onboard():
 
     console.print(f"\n{__logo__} nanobot is ready!")
     console.print("\nNext steps:")
-    console.print("  1. Add your API key to [cyan]~/.nanobot/config.json[/cyan]")
+    from nanobot.config.loader import get_config_path
+    console.print(f"  1. Add your API key to [cyan]{get_config_path()}[/cyan]")
     console.print("     Get one at: https://openrouter.ai/keys")
     console.print("  2. Chat: [cyan]nanobot agent -m \"Hello!\"[/cyan]")
     console.print("\n[dim]Want Telegram/WhatsApp? See: https://github.com/HKUDS/nanobot#-chat-apps[/dim]")
@@ -209,7 +211,8 @@ def _make_provider(config: Config):
         return GeminiWebProvider()
 
     console.print("[red]Error: This minimal build only supports gemini_web provider.[/red]")
-    console.print("Set model to [cyan]gemini_web/default[/cyan] in ~/.nanobot/config.json")
+    from nanobot.config.loader import get_config_path
+    console.print(f"Set model to [cyan]gemini_web/default[/cyan] in {get_config_path()}")
     raise typer.Exit(1)
 
 
@@ -590,8 +593,8 @@ def gemini_web(
     ),
     headless: bool = typer.Option(False, "--headless/--no-headless", help="Run browser headless"),
     timeout_ms: int = typer.Option(120000, "--timeout-ms", help="Timeout waiting for UI/response"),
-    user_data_dir: Path = typer.Option(
-        Path.home() / ".nanobot" / "profiles" / "gemini-web",
+    user_data_dir: Path | None = typer.Option(
+        None,
         "--user-data-dir",
         help="Persistent browser profile dir (keeps Gemini login session)",
     ),
@@ -604,7 +607,10 @@ def gemini_web(
         console.print("Install with: pip install playwright && python -m playwright install chromium")
         raise typer.Exit(1) from exc
 
+    from nanobot.config.loader import get_data_dir
+
     out_path = output or default_output_path()
+    resolved_user_data_dir = user_data_dir or (get_data_dir() / "profiles" / "gemini-web")
     console.print(f"{__logo__} Running Gemini Web MVP...")
     console.print(f"Output file: [cyan]{out_path}[/cyan]")
 
@@ -614,7 +620,7 @@ def gemini_web(
             output_path=out_path,
             headless=headless,
             timeout_ms=timeout_ms,
-            user_data_dir=user_data_dir,
+            user_data_dir=resolved_user_data_dir,
         )
     except Exception as exc:
         console.print(f"[red]Failed:[/red] {exc}")
@@ -731,8 +737,9 @@ def _get_bridge_dir() -> Path:
     import shutil
     import subprocess
 
-    # User's bridge location
-    user_bridge = Path.home() / ".nanobot" / "bridge"
+    # User bridge location
+    from nanobot.config.loader import get_data_dir
+    user_bridge = get_data_dir() / "bridge"
 
     # Check if already built
     if (user_bridge / "dist" / "index.js").exists():

@@ -1,5 +1,6 @@
 """Utility functions for nanobot."""
 
+import os
 import re
 from datetime import datetime
 from pathlib import Path
@@ -12,13 +13,16 @@ def ensure_dir(path: Path) -> Path:
 
 
 def get_data_path() -> Path:
-    """~/.nanobot data directory."""
+    """Nanobot data directory (NANOBOT_HOME or ~/.nanobot)."""
+    base = os.getenv("NANOBOT_HOME", "").strip()
+    if base:
+        return ensure_dir(Path(base).expanduser())
     return ensure_dir(Path.home() / ".nanobot")
 
 
 def get_workspace_path(workspace: str | None = None) -> Path:
-    """Resolve and ensure workspace path. Defaults to ~/.nanobot/workspace."""
-    path = Path(workspace).expanduser() if workspace else Path.home() / ".nanobot" / "workspace"
+    """Resolve and ensure workspace path. Defaults to <data_dir>/workspace."""
+    path = Path(workspace).expanduser() if workspace else get_data_path() / "workspace"
     return ensure_dir(path)
 
 

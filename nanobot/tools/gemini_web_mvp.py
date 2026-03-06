@@ -10,6 +10,7 @@ from playwright.async_api import BrowserContext, Page
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from playwright.async_api import async_playwright
 
+from nanobot.config.loader import get_data_dir
 from nanobot.tools.gemini_web_selectors import (
     GEMINI_URL,
     INPUT_SELECTORS,
@@ -40,7 +41,7 @@ async def run_once(
     """Run one Gemini web prompt and persist the raw response text."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    profile_dir = user_data_dir or (Path.home() / ".nanobot" / "profiles" / "gemini-web")
+    profile_dir = user_data_dir or (get_data_dir() / "profiles" / "gemini-web")
     profile_dir.mkdir(parents=True, exist_ok=True)
 
     _debug_dir = debug_dir or Path("outputs")

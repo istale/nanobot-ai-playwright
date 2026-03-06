@@ -12,6 +12,7 @@ from uuid import uuid4
 
 from loguru import logger
 
+from nanobot.config.loader import get_data_dir
 from nanobot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
 from nanobot.tools.gemini_web_mvp import run_once
 
@@ -29,7 +30,7 @@ class GeminiWebProvider(LLMProvider):
         output_dir: Path | None = None,
     ):
         super().__init__(api_key=None, api_base=None)
-        self.user_data_dir = user_data_dir or (Path.home() / ".nanobot" / "profiles" / "gemini-web")
+        self.user_data_dir = user_data_dir or (get_data_dir() / "profiles" / "gemini-web")
         self.headless = headless
         self.timeout_ms = timeout_ms
         self.output_dir = output_dir or Path("outputs")
