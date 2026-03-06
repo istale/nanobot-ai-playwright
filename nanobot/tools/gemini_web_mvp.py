@@ -3,50 +3,28 @@
 from __future__ import annotations
 
 import asyncio
-import os
 from datetime import UTC, datetime
 from pathlib import Path
 
 from playwright.async_api import BrowserContext, Page
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
-from playwright.async_api import Playwright, async_playwright
+from playwright.async_api import async_playwright
 
-
-GEMINI_URL = "https://gemini.google.com/app"
-CHROME_CDP_URL = os.getenv("NANOBOT_CHROME_CDP_URL", "").strip()
-
-_PLAYWRIGHT: Playwright | None = None
-_CONTEXT_CACHE: dict[tuple[str, bool], BrowserContext] = {}
-_PAGE_CACHE: dict[tuple[str, bool], Page] = {}
-_LAST_INPUT_SELECTOR: dict[tuple[str, bool], str] = {}
-
-
-async def _get_cached_context(profile_dir: Path, headless: bool) -> BrowserContext:
-    global _PLAYWRIGHT
-    key = (str(profile_dir), headless)
-    existing = _CONTEXT_CACHE.get(key)
-    if existing is not None:
-        return existing
-
-    if _PLAYWRIGHT is None:
-        _PLAYWRIGHT = await async_playwright().start()
-
-    if CHROME_CDP_URL:
-        browser = await _PLAYWRIGHT.chromium.connect_over_cdp(CHROME_CDP_URL)
-        if browser.contexts:
-            context = browser.contexts[0]
-        else:
-            context = await browser.new_context(viewport={"width": 1400, "height": 1000})
-    else:
-        context = await _PLAYWRIGHT.chromium.launch_persistent_context(
-            str(profile_dir),
-            headless=headless,
-            viewport={"width": 1400, "height": 1000},
-            args=["--disable-blink-features=AutomationControlled"],
-        )
-
-    _CONTEXT_CACHE[key] = context
-    return context
+from nanobot.tools.gemini_web_selectors import (
+    GEMINI_URL,
+    INPUT_SELECTORS,
+    RESPONSE_COUNT_SELECTORS,
+    RESPONSE_SELECTORS,
+    STOP_SELECTORS,
+)
+from nanobot.tools.web_controller import (
+    CHROME_CDP_URL,
+    cache_key,
+    get_cached_context,
+    get_last_input_selector,
+    get_or_create_page,
+    set_last_input_selector,
+)
 
 
 async def run_once(
@@ -72,18 +50,16 @@ async def run_once(
     page: Page | None = None
     transient = (not keep_browser_open) and (not CHROME_CDP_URL)
 
+    key = cache_key(profile_dir, headless)
+
     if keep_browser_open:
-        context = await _get_cached_context(profile_dir, headless)
-        key = (str(profile_dir), headless)
-        page = _PAGE_CACHE.get(key)
-        if page is None or page.is_closed():
-            page = context.pages[0] if context.pages else await context.new_page()
-            _PAGE_CACHE[key] = page
+        context = await get_cached_context(profile_dir, headless)
+        page = await get_or_create_page(context, key)
         navigate = page.url == "" or "gemini.google.com" not in page.url
     else:
         if CHROME_CDP_URL:
-            context = await _get_cached_context(profile_dir, headless)
-            page = context.pages[0] if context.pages else await context.new_page()
+            context = await get_cached_context(profile_dir, headless)
+            page = await get_or_create_page(context, key)
             return await _run_on_page(
                 page,
                 context,
@@ -93,6 +69,7 @@ async def run_once(
                 _debug_dir,
                 transient=False,
                 navigate=True,
+                key=key,
             )
 
         async with async_playwright() as p:
@@ -112,6 +89,7 @@ async def run_once(
                 _debug_dir,
                 transient=True,
                 navigate=True,
+                key=key,
             )
 
     return await _run_on_page(
@@ -123,6 +101,7 @@ async def run_once(
         _debug_dir,
         transient=transient,
         navigate=navigate,
+        key=key,
     )
 
 
@@ -136,27 +115,16 @@ async def _run_on_page(
     *,
     transient: bool,
     navigate: bool,
+    key: tuple[str, bool] | None = None,
 ) -> str:
     if navigate:
         await page.goto(GEMINI_URL, wait_until="domcontentloaded", timeout=timeout_ms)
 
-    key = None
-    for k, v in _PAGE_CACHE.items():
-        if v is page:
-            key = k
-            break
-
-    input_selectors = [
-        "textarea[aria-label*='Enter a prompt']",
-        "textarea[aria-label*='prompt']",
-        "textarea[placeholder*='Enter a prompt']",
-        "textarea",
-        "div[contenteditable='true'][role='textbox']",
-        "div[contenteditable='true'][aria-label*='prompt']",
-    ]
-    if key and key in _LAST_INPUT_SELECTOR:
-        preferred = _LAST_INPUT_SELECTOR[key]
-        input_selectors = [preferred] + [s for s in input_selectors if s != preferred]
+    input_selectors = list(INPUT_SELECTORS)
+    if key:
+        preferred = get_last_input_selector(key)
+        if preferred:
+            input_selectors = [preferred] + [s for s in input_selectors if s != preferred]
 
     prompt_box = None
     for selector in input_selectors:
@@ -165,7 +133,7 @@ async def _run_on_page(
             await candidate.wait_for(state="visible", timeout=1000)
             prompt_box = candidate
             if key:
-                _LAST_INPUT_SELECTOR[key] = selector
+                set_last_input_selector(key, selector)
             break
         except PlaywrightTimeoutError:
             continue
@@ -177,7 +145,7 @@ async def _run_on_page(
         raise RuntimeError("Cannot find Gemini prompt box. Likely not logged in or page layout changed.")
 
     response_count_before = 0
-    for sel in ["model-response", "[data-test-id='response-container']", "message-content"]:
+    for sel in RESPONSE_COUNT_SELECTORS:
         try:
             response_count_before = max(response_count_before, await page.locator(sel).count())
         except Exception:
@@ -189,7 +157,7 @@ async def _run_on_page(
 
     async def _response_count() -> int:
         c = 0
-        for sel in ["model-response", "[data-test-id='response-container']", "message-content"]:
+        for sel in RESPONSE_COUNT_SELECTORS:
             try:
                 c = max(c, await page.locator(sel).count())
             except Exception:
@@ -207,16 +175,8 @@ async def _run_on_page(
             await context.close()
         raise RuntimeError("Timed out waiting for Gemini response completion.")
 
-    response_selectors = [
-        "model-response .markdown",
-        "model-response",
-        "[data-test-id='response-container'] .markdown",
-        "[data-test-id='response-container']",
-        "message-content .markdown",
-    ]
-
     async def _latest_response_text() -> str:
-        for selector in response_selectors:
+        for selector in RESPONSE_SELECTORS:
             locator = page.locator(selector)
             count = await locator.count()
             if count <= 0:
@@ -239,7 +199,7 @@ async def _run_on_page(
         last_text = cur_text or last_text
 
         stop_visible = False
-        for stop_sel in ["button:has-text('Stop generating')", "button[aria-label*='Stop']"]:
+        for stop_sel in STOP_SELECTORS:
             try:
                 stop_visible = stop_visible or await page.locator(stop_sel).first.is_visible(timeout=100)
             except Exception:
