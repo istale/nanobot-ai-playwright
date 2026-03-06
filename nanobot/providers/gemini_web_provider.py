@@ -156,6 +156,23 @@ class GeminiWebProvider(LLMProvider):
             body += "\n\n[TOOL_SCHEMAS]\n" + constraints
         return "\n\n" + body
 
+    @staticmethod
+    def _repair_hint_from_tool_result(tool_result: str) -> str:
+        t = (tool_result or "").lower()
+        if "invalid parameters for tool 'exec'" in t and "missing required command" in t:
+            return (
+                "\n\n[RETRY_HINT]\n"
+                "The previous tool call was invalid for exec: missing required field 'command'.\n"
+                "Send a corrected tool call, e.g.:\n"
+                '<tool_call>{"name":"exec","arguments":{"command":"dir D:/temp"}}</tool_call>'
+            )
+        if "invalid parameters" in t:
+            return (
+                "\n\n[RETRY_HINT]\n"
+                "The previous tool call had invalid arguments. Keep tool name, fix required fields/types, then resend one corrected <tool_call>."
+            )
+        return ""
+
     def _build_prompt(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None) -> str:
         """First turn includes system+tool protocol; later turns send user or tool-result context."""
         latest_user = ""
@@ -189,9 +206,12 @@ class GeminiWebProvider(LLMProvider):
             )
 
         if latest_tool_result:
+            retry_hint = ""
+            if self.text_protocol.get("include_error_recovery_policy", True):
+                retry_hint = self._repair_hint_from_tool_result(latest_tool_result)
             return (
                 f"[USER]\n{latest_user}\n\n"
-                f"[TOOL_RESULT]\n{latest_tool_result}\n\n"
+                f"[TOOL_RESULT]\n{latest_tool_result}{retry_hint}\n\n"
                 "Use the tool result to continue and answer the user."
             )
 
@@ -287,6 +307,23 @@ class GeminiWebProvider(LLMProvider):
                     start = -1
         return objs
 
+    @staticmethod
+    def _normalize_windows_paths(arguments: dict[str, Any]) -> dict[str, Any]:
+        path_keys = {"path", "file_path", "filepath", "workdir", "cwd", "user_data_dir", "output", "output_path"}
+
+        def _fix(v: Any, key: str | None = None) -> Any:
+            if isinstance(v, dict):
+                return {k: _fix(val, k) for k, val in v.items()}
+            if isinstance(v, list):
+                return [_fix(x, key) for x in v]
+            if isinstance(v, str):
+                s = v.strip()
+                if key in path_keys and re.match(r"^[A-Za-z]:\\", s):
+                    return s.replace("\\", "/")
+            return v
+
+        return _fix(arguments)
+
     def _extract_tool_calls(self, content: str) -> tuple[str | None, list[ToolCallRequest]]:
         calls: list[ToolCallRequest] = []
         source = html.unescape(content or "")
@@ -315,6 +352,8 @@ class GeminiWebProvider(LLMProvider):
                 if isinstance(parsed_args, dict):
                     arguments = parsed_args
             if name and isinstance(arguments, dict):
+                if self.text_protocol.get("windows_path_hints", True):
+                    arguments = self._normalize_windows_paths(arguments)
                 calls.append(ToolCallRequest(id=f"tw_{uuid4().hex[:12]}", name=name, arguments=arguments))
 
         cleaned = source
